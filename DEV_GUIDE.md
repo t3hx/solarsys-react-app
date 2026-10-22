@@ -83,16 +83,17 @@ Sous-ensemble Iconify embarqué (hors ligne) : ajouter le nom de l'icône dans
 
 ## Branches et CI/CD
 
-- Branches `feat/*`, `fix/*`, `perf/*`, `ci/*`… tirées de `dev` ; squash merge dans `dev` ;
-  `dev → main` par merge simple (seule `dev` est acceptée vers `main`, vérifié par
-  `pr-checks.yml`). Conventional Commits, en anglais — le titre de PR aussi (vérifié).
-- **Déploiement entièrement automatique**, deux environnements — la référence complète est
-  [`docs/deployment.md`](docs/deployment.md) :
-  - push `dev` → CI (quality + e2e) → image `ghcr.io/t3hx/solarsys-react-app:preprod` → webhook →
-    app Dokploy **preprod** ;
-  - merge `dev → main` → CI → version calculée (première release : `v1.0.0`) → image
-    `:latest` + `:vX.Y.Z` → webhook → app Dokploy **prod** → vérification que la prod sert
-    bien la version (`/version.json`) → tag git + GitHub Release **seulement après cette
-    preuve**.
+- **Trunk-based** : branches `feat/*`, `fix/*`, `perf/*`, `ci/*`… tirées de `main`, une PR
+  par modification, squash merge dans `main`. Conventional Commits, en anglais — le titre
+  de PR aussi (vérifié par `pr-checks.yml`) : c'est lui qui devient le commit sur `main` et
+  qui fixe la version.
+- **Déploiement entièrement automatique**, un seul environnement — la référence complète
+  est [`docs/deployment.md`](docs/deployment.md). Le pipeline vit dans
+  [`t3hx/workflows`](https://github.com/t3hx/workflows) ; `.github/workflows/ci.yml` ne fait
+  que l'appeler :
+  - PR vers `main` → verify (lint, format, typecheck, tests, build, e2e) ;
+  - merge dans `main` → verify → version calculée → image `:latest` + `:vX.Y.Z` → webhook →
+    app Dokploy **prod** → vérification que la prod sert bien la version (`/version.json`)
+    → tag git + GitHub Release **seulement après cette preuve**.
     L'image d'exécution est `nginxinc/nginx-unprivileged` et sert `dist/` statique sur le
     port 8080 (non-root), sans aucun secret applicatif.

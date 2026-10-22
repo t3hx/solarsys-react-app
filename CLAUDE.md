@@ -34,7 +34,7 @@ Vite 8, React 19, TypeScript 5.9 (strict), Tailwind v4 via `@tailwindcss/vite`, 
 - TDD: write the failing test first, then the minimum code, then refactor with tests green. Pure logic (`src/physics`, `src/data`, formatters) must be covered.
 - Physical fidelity: rotation periods are positive and the obliquity (0–180°) alone orients the pole and carries the spin direction (IAU convention; `rotationDirection` is derived). `src/data/reference.test.ts` checks the shipped data against NASA Planetary Fact Sheet / JPL J2000 values: fix the data, never the tolerances. Sun light has no distance decay (showcase lighting, clear terminator on every body).
 - No `console.log` in committed code (`warn`/`error` only, and sparingly).
-- Never commit, push or merge unless asked. Branches `feat/*`, `fix/*`, `perf/*`, `ci/*`… from `dev`; squash merge into `dev`; `dev → main` by merge only. Pushing `main` deploys.
+- Never commit, push or merge unless asked. Trunk-based: branches `feat/*`, `fix/*`, `perf/*`, `ci/*`… from `main`; one PR per change, squash merge into `main` (the PR title becomes the commit and drives the version). Merging into `main` deploys to production.
 
 ## Layout (target, see `docs/react-migration-plan.md` §3)
 
@@ -46,4 +46,4 @@ Source textures keep their full resolution: every body can be zoomed to its surf
 
 ## Deployment
 
-Reference: `docs/deployment.md` (frozen standard — do not renegotiate it). Two environments, fully automatic: push `dev` → CI → image `ghcr.io/t3hx/solarsys-react-app:preprod` → Dokploy preprod; merge `dev → main` → CI → auto semver tag `vX.Y.Z` from Conventional Commits + GitHub Release → image `:latest` + `:vX.Y.Z` → Dokploy prod. Webhook secrets `DOKPLOY_PREPROD_WEBHOOK_URL` / `DOKPLOY_PROD_WEBHOOK_URL`. Runtime image is `nginxinc/nginx-unprivileged` serving `dist/` on port 8080 (non-root). No runtime secrets; the app is static.
+Reference: `docs/deployment.md`. Trunk-based, one environment, fully automatic. The pipeline lives in `t3hx/workflows` (reusable `verify.yml` + `deploy.yml`); `.github/workflows/ci.yml` only calls it: never edit the pipeline here. Every PR runs verify (lint, format, typecheck, unit, build, e2e). Every merge into `main` → semver tag `vX.Y.Z` from the squashed PR title (Conventional Commits) → image `ghcr.io/t3hx/solarsys-react-app:latest` + `:vX.Y.Z` → Dokploy webhook (`DOKPLOY_PROD_WEBHOOK_URL`) → `/version.json` checked at the origin over the tailnet → only then git tag + GitHub Release. Rollback = pin `:vX.Y.Z` in Dokploy. Runtime image is `nginxinc/nginx-unprivileged` serving `dist/` on port 8080 (non-root). No runtime secrets; the app is static.

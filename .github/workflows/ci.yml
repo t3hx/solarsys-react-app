@@ -1,269 +1,37 @@
 name: CI
 
+# ~ Le pipeline vit dans t3hx/workflows : ce fichier ne fait que l'appeler.
+# ~ PR -> verify ; merge sur main -> verify puis deploy (version, image, Dokploy, verif, release).
 on:
-  push:
-    branches: [dev, main]
   pull_request:
-    branches: [dev, main]
+  push:
+    branches: [main]
 
-# ~ Les runs PR obsoletes sont annules ; les deploiements (push) sont mis en file, jamais coupes
+# ~ PR : un nouveau push annule le run en cours. main : les deploiements passent en file,
+# ~ jamais interrompus en vol.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+permissions:
+  contents: read
 
 jobs:
-  quality:
-    name: Lint, typecheck, test, build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
-      - run: pnpm format:check
-      - run: pnpm typecheck
-      - run: pnpm test
-      - run: pnpm build
+  verify:
+    uses: t3hx/workflows/.github/workflows/verify.yml@main
+    with:
+      e2e: true
 
-  e2e:
-    name: End-to-end
-    runs-on: ubuntu-latest
-    needs: quality
-    steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm exec playwright install --with-deps chromium
-      - run: pnpm test:e2e
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: playwright-report
-          path: playwright-report
-          retention-days: 7
-
-  # ── Preprod: every push on dev ships to the preprod Dokploy app ──────────
-
-  docker-preprod:
-    name: Build and push preprod image
-    runs-on: ubuntu-latest
-    needs: [quality, e2e]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v5
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=preprod
-            type=sha,prefix=dev-
-      - uses: docker/build-push-action@v7
-        with:
-          context: .
-          push: true
-          build-args: |
-            APP_VERSION=dev-${{ github.sha }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  deploy-preprod:
-    name: Deploy to Dokploy (preprod)
-    runs-on: ubuntu-latest
-    needs: docker-preprod
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
-    steps:
-      # ~ Dokploy et la preprod ne sont joignables que sur le tailnet : le runner
-      # ~ le rejoint en node ephemere le temps du job
-      - name: Join the tailnet
-        uses: tailscale/github-action@v3
-        with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:ci
-      - name: Trigger Dokploy redeploy
-        id: hook
-        env:
-          WEBHOOK_URL: ${{ secrets.DOKPLOY_PREPROD_WEBHOOK_URL }}
-        run: |
-          if [ -z "$WEBHOOK_URL" ]; then
-            echo "deployed=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::DOKPLOY_PREPROD_WEBHOOK_URL is not set: preprod not wired yet (see docs/deployment.md)."
-            exit 0
-          fi
-          curl --fail --silent --show-error -X POST "$WEBHOOK_URL"
-          echo "deployed=true" >> "$GITHUB_OUTPUT"
-      - name: Wait until preprod serves this build
-        if: steps.hook.outputs.deployed == 'true'
-        env:
-          BASE_URL: ${{ vars.PREPROD_URL }}
-        run: |
-          if [ -z "$BASE_URL" ]; then
-            echo "::error::PREPROD_URL repository variable is not set: cannot prove the deploy happened."
-            exit 1
-          fi
-          expected="dev-${GITHUB_SHA}"
-          for i in $(seq 1 30); do
-            live=$(curl -fsS --max-time 10 "$BASE_URL/version.json" | jq -r '.version' 2>/dev/null || echo "")
-            if [ "$live" = "$expected" ]; then
-              echo "Preprod serves $expected."
-              exit 0
-            fi
-            echo "Attempt $i/30: live='$live', expected='$expected'. Retrying in 10 s..."
-            sleep 10
-          done
-          echo "::error::Preprod never served $expected: the webhook answered but nothing went live."
-          exit 1
-
-  # ── Prod: version computed first, released ONLY once production serves it ─
-
-  version:
-    name: Compute next version
-    runs-on: ubuntu-latest
-    needs: [quality, e2e]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    outputs:
-      tag: ${{ steps.pick.outputs.tag }}
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-      - id: dry
-        name: Dry-run semver from Conventional Commits
-        uses: mathieudutour/github-tag-action@v7
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          default_bump: patch
-          dry_run: true
-      - id: pick
-        name: First release is v1.0.0
-        run: |
-          if [ -z "$(git tag --list 'v*')" ]; then
-            echo "tag=v1.0.0" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${{ steps.dry.outputs.new_tag }}" >> "$GITHUB_OUTPUT"
-          fi
-
-  docker-prod:
-    name: Build and push prod image
-    runs-on: ubuntu-latest
-    needs: version
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v5
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=latest
-            type=raw,value=${{ needs.version.outputs.tag }}
-            type=sha,prefix=main-
-      - uses: docker/build-push-action@v7
-        with:
-          context: .
-          push: true
-          build-args: |
-            APP_VERSION=${{ needs.version.outputs.tag }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  deploy-prod:
-    name: Deploy to Dokploy (prod)
-    runs-on: ubuntu-latest
-    needs: [version, docker-prod]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    steps:
-      # ~ Le webhook Dokploy n'est joignable que sur le tailnet (la verification
-      # ~ de PROD_URL, elle, passe par Cloudflare public)
-      - name: Join the tailnet
-        uses: tailscale/github-action@v3
-        with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:ci
-      - name: Trigger Dokploy redeploy
-        env:
-          WEBHOOK_URL: ${{ secrets.DOKPLOY_PROD_WEBHOOK_URL }}
-        run: |
-          if [ -z "$WEBHOOK_URL" ]; then
-            echo "::error::DOKPLOY_PROD_WEBHOOK_URL is not set: a production deploy must never be skipped silently (docs/deployment.md)."
-            exit 1
-          fi
-          curl --fail --silent --show-error -X POST "$WEBHOOK_URL"
-      # ~ Verification a l'ORIGINE, par le tailnet : Cloudflare (proxy public de la prod)
-      # ~ repond 403 aux IPs de datacenter des runners (anti-bot). On interroge donc
-      # ~ directement Traefik sur le VPS (HTTP port 80, celui que le tunnel utilise),
-      # ~ ce qui prouve ce que Dokploy sert reellement.
-      - name: Wait until production serves ${{ needs.version.outputs.tag }}
-        env:
-          BASE_URL: ${{ vars.PROD_URL }}
-          ORIGIN_IP: ${{ vars.VPS_TAILSCALE_IP }}
-        run: |
-          if [ -z "$BASE_URL" ] || [ -z "$ORIGIN_IP" ]; then
-            echo "::error::PROD_URL or VPS_TAILSCALE_IP repository variable is not set: cannot prove the deploy happened."
-            exit 1
-          fi
-          host="${BASE_URL#https://}"
-          expected="${{ needs.version.outputs.tag }}"
-          for i in $(seq 1 30); do
-            live=$(curl -fsS --max-time 10 --resolve "$host:80:$ORIGIN_IP" "http://$host/version.json" | jq -r '.version' 2>/dev/null || echo "")
-            if [ "$live" = "$expected" ]; then
-              echo "Production origin serves $expected."
-              exit 0
-            fi
-            echo "Attempt $i/30: live='$live', expected='$expected'. Retrying in 10 s..."
-            sleep 10
-          done
-          echo "::error::Production never served $expected: the webhook answered but nothing went live."
-          exit 1
-
-  release:
-    name: Publish release
-    runs-on: ubuntu-latest
-    needs: [version, deploy-prod]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  deploy:
+    if: github.event_name == 'push'
+    needs: verify
+    uses: t3hx/workflows/.github/workflows/deploy.yml@main
+    # ~ Un workflow appele ne peut pas avoir plus de droits que son appelant
     permissions:
       contents: write
-    steps:
-      # ~ Le tag git et la Release n'existent que si la prod sert reellement la version
-      - uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.version.outputs.tag }}
-          target_commitish: ${{ github.sha }}
-          generate_release_notes: true
+      packages: write
+    with:
+      image: ghcr.io/t3hx/solarsys-react-app
+      prod-url: ${{ vars.PROD_URL }}
+      origin-ip: ${{ vars.VPS_TAILSCALE_IP }}
+    secrets: inherit
