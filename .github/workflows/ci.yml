@@ -18,14 +18,14 @@ permissions:
 
 jobs:
   verify:
-    uses: t3hx/workflows/.github/workflows/verify.yml@main
+    uses: t3hx/workflows/.github/workflows/verify.yml@v1
     with:
       e2e: true
 
   deploy:
     if: github.event_name == 'push'
     needs: verify
-    uses: t3hx/workflows/.github/workflows/deploy.yml@main
+    uses: t3hx/workflows/.github/workflows/deploy.yml@v1
     # ~ Un workflow appele ne peut pas avoir plus de droits que son appelant
     permissions:
       contents: write
