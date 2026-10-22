@@ -45,7 +45,7 @@ See [`DEV_GUIDE.md`](DEV_GUIDE.md) (French) for the developer guide and [`docs/r
 
 ## Deployment
 
-Fully automatic, two environments (see [`docs/deployment.md`](docs/deployment.md)): every push to `dev` runs the GitHub Actions pipeline (lint, typecheck, unit tests, build, Playwright e2e), pushes `ghcr.io/t3hx/solarsys-react-app:preprod` and redeploys the preprod Dokploy app through a webhook. Every merge of `dev` into `main` additionally computes a semver tag from the Conventional Commits, publishes a GitHub Release and ships `:latest` + `:vX.Y.Z` to production the same way. The runtime image is `nginxinc/nginx-unprivileged` serving the static `dist/` on port 8080; the app needs no runtime secret.
+Trunk-based and fully automatic (see [`docs/deployment.md`](docs/deployment.md)); the pipeline lives in [`t3hx/workflows`](https://github.com/t3hx/workflows). Every pull request runs lint, typecheck, unit tests, build and Playwright e2e. Every merge into `main` additionally computes a semver tag from the Conventional Commits, ships `ghcr.io/t3hx/solarsys-react-app:latest` + `:vX.Y.Z` to production through a Dokploy webhook, checks that production serves that version, and only then publishes a GitHub Release. The runtime image is `nginxinc/nginx-unprivileged` serving the static `dist/` on port 8080; the app needs no runtime secret.
 
 ## Data sources
 

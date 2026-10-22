@@ -14,13 +14,3 @@ jobs:
       - uses: amannn/action-semantic-pull-request@v6
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  main-only-from-dev:
-    if: github.base_ref == 'main'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Refuse any branch other than dev
-        if: github.head_ref != 'dev'
-        run: |
-          echo "Only dev can be merged into main."
-          exit 1
